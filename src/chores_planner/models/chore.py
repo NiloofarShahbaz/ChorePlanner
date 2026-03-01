@@ -12,7 +12,7 @@ class FrequencyChoices(StrEnum):
     YEARLY = "yearly", "year"
 
     def __new__(cls, value, translation):
-        self = str.__new__(cls)
+        self = str.__new__(cls, value)
         self._value_ = value
         self.translation = translation
         return self
@@ -30,6 +30,7 @@ class Chore(Model):
     frequency_interval = fields.IntField(default=1)
     frequency_data = fields.JSONField()
     duration = fields.TimeDeltaField(default=timedelta(minutes=30))
+    preferred_time = fields.CharField(max_length=21) # Because of sqlite3 limitation
 
     def __str__(self):
         return self.name

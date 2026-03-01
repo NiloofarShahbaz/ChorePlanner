@@ -1,15 +1,18 @@
+from datetime import time
 from enum import Enum, StrEnum
+from functools import cached_property
 from typing import Annotated, Literal, Union
 
 import inflect
 from pydantic import (
     BaseModel,
     Field,
+    SkipValidation,
     TypeAdapter,
     computed_field,
     create_model,
     model_validator,
-    types, SkipValidation,
+    types,
 )
 from tortoise.contrib.pydantic import PydanticListModel, pydantic_model_creator
 
@@ -45,10 +48,11 @@ def pydantic_queryset_creator(
 class ChoreGetModel(BaseChoreGetModel):
     id: types.PositiveInt  # defined because it's wierd to see -12345 in openAPI docs!
     frequency_interval: types.PositiveInt
-    frequency_data: SkipValidation[FrequencyData]
+    frequency_data: FrequencyData
+    preferred_time: time
 
     @computed_field
-    @property
+    @cached_property
     def frequency_translation(self) -> str:
         frequency = (
             f"Every {self.frequency_interval} {self.frequency.translation}s"
@@ -66,7 +70,9 @@ class ChoreGetModel(BaseChoreGetModel):
                 return f"{frequency} on {p.join(days_list)}"
             case FrequencyChoices.MONTHLY:
                 if self.frequency_data.by_monthdays:
-                    return f"{frequency} on day {self.frequency_data.by_monthdays}"
+                    return (
+                        f"{frequency} on day {p.join(self.frequency_data.by_monthdays)}"
+                    )
                 bydays = []
                 for byday in self.frequency_data.by_days or []:
                     if byday.occurance > 0:
@@ -94,7 +100,7 @@ class WeekDay(StrEnum):
     SA = "SA", "Saturday"
 
     def __new__(cls, value, translation):
-        self = str.__new__(cls)
+        self = str.__new__(cls, value)
         self._value_ = value
         self.translation = translation
         return self
@@ -103,9 +109,6 @@ class WeekDay(StrEnum):
 class ByDay(BaseModel):
     occurance: Annotated[int, Field(lt=53, gt=-53)] | None = None
     day: WeekDay
-    
-    class Config:
-        use_enum_values = True
 
 
 class FrequencyData(BaseModel):
@@ -123,6 +126,7 @@ class FrequencyData(BaseModel):
 
 class ChoreCreateModel(BaseChoreCreateModel):
     frequency_data: FrequencyData
+    preferred_time: time
 
     @model_validator(mode="after")
     def check_frequency_data_with_frequency(self):
@@ -167,3 +171,24 @@ class ChoreCreateModel(BaseChoreCreateModel):
                 ):
                     raise ValueError("Occurance can't be zero.")
         return self
+
+    @computed_field
+    @cached_property
+    def calendar_rule(self) -> str:
+        extra_string = ""
+
+        match self.frequency:
+            case FrequencyChoices.WEEKLY:
+                days_list = [d.day.value for d in self.frequency_data.by_days or []]
+                extra_string = f";BYDAY={','.join(days_list)}"
+            case FrequencyChoices.MONTHLY | FrequencyChoices.YEARLY:
+                if self.frequency_data.by_monthdays:
+                    extra_string = (
+                        f";BYMONTHDAY={','.join(self.frequency_data.by_monthdays)}"
+                    )
+                else:
+                    bydays = []
+                    for byday in self.frequency_data.by_days or []:
+                        bydays.append(f"{byday.occurance}{byday.day}")
+                    extra_string = f";BYDAY={','.join(bydays)}"
+        return f"RRULE:FREQ={self.frequency.upper()}{extra_string}"
