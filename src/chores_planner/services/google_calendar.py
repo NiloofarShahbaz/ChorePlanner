@@ -1,19 +1,19 @@
-import json
 import os
 from datetime import datetime
 from functools import cached_property
 from logging import getLogger
-from pathlib import Path
 
 from dateutil.rrule import rrulestr
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src import CREDENTIALS_PATH, TOKEN_PATH
-from src.chores_planner.models import CalendarEvent, Chore
-from src.chores_planner.serializers.chore import ChoreCreateModel, ChoreGetModel
+from src.chores_planner.models.calendar_event import CalendarEvent
+from src.chores_planner.models.chore import Chore
+from src.chores_planner.serializers.chore import ChoreCreateModel
 
 LOGGER = getLogger(__name__)
 
@@ -24,6 +24,7 @@ CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
 class GoogleCalendarService:
     @cached_property
     async def credentials(self) -> Credentials:
+        creds = None
         if TOKEN_PATH.exists():
             creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
@@ -44,7 +45,9 @@ class GoogleCalendarService:
                 f.write(creds.to_json())
         return creds
 
-    async def create_calendar_events(self, chore_data: ChoreCreateModel):
+    async def create_calendar_events(
+        self, chore_data: ChoreCreateModel, db: AsyncSession
+    ) -> Chore:
         with build("calendar", "v3", credentials=await self.credentials) as service:
             rule = rrulestr(chore_data.calendar_rule, dtstart=datetime.now())
             first_occurrence = rule.after(datetime.now(), inc=True)
@@ -75,11 +78,19 @@ class GoogleCalendarService:
             except Exception:
                 raise
 
-            chore_obj = await Chore.create(**chore_data.model_dump())
-            calendar_event = await CalendarEvent.create(
+            chore_dict = chore_data.model_dump(exclude={"calendar_rule"})
+            chore_dict["preferred_time"] = str(chore_dict["preferred_time"])
+            chore_obj = Chore(**chore_dict)
+            db.add(chore_obj)
+            await db.flush()
+
+            calendar_event = CalendarEvent(
                 calendar_event_id=event["id"],
                 starts_from=event["start"]["dateTime"],
-                chore=chore_obj,
+                chore_id=chore_obj.id,
             )
+            db.add(calendar_event)
+            await db.commit()
+            await db.refresh(chore_obj)
 
             return chore_obj

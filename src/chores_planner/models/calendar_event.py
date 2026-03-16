@@ -1,12 +1,35 @@
-from tortoise import Model, fields
+from __future__ import annotations
+from enum import StrEnum
+from datetime import datetime
 
-from .chore import Chore
+from sqlalchemy import Integer, String, DateTime, ForeignKey, JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from src.db import Base
 
 
-class CalendarEvent(Model):
-    id = fields.IntField(primary_key=True)
-    calendar_event_id = fields.CharField(max_length=250, unique=True)
-    starts_from = fields.DatetimeField()
-    chore = fields.OneToOneField(
-        Chore, related_name="event", on_delete=fields.SET_NULL, null=True
+class StatusChoices(StrEnum):
+    PENDING = "Pending"
+    DONE = "Done"
+    POSTPONED = "Postponed" 
+    CANCELED = "Canceled"
+    
+
+class CalendarEvent(Base):
+    __tablename__ = "calendar_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    calendar_event_id: Mapped[str] = mapped_column(String(250), unique=True)
+    starts_from: Mapped[datetime] = mapped_column(DateTime) # TODO: Do we need this?
+    chore_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("chores.id", ondelete="SET NULL"),
+        nullable=True,
     )
+    
+    is_parent: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[StatusChoices] = mapped_column(default=StatusChoices.PENDING)
+    status_data: Mapped[JSON | None] = mapped_column(JSON(none_as_null=True), default=None)
+    
+
+    chore: Mapped[Chore | None] = relationship("Chore", back_populates="events")

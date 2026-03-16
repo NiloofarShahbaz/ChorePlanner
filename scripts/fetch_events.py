@@ -45,7 +45,7 @@ print(calendar_id)
 event = service.events().insert(
     calendarId=calendar_id,
     body={
-        "summary": "Test Chore Event 3",
+        "summary": "Test Chore Event 6",
         "description": "Created by ChoresPlanner test script",
         "start": {
             "dateTime": "2026-02-27T10:00:00",
@@ -56,13 +56,9 @@ event = service.events().insert(
             "timeZone": "Europe/Amsterdam",
         },
         "recurrence": [
-            "RRULE:FREQ=WEEKLY;BYDAY=FR"
+            "RRULE:FREQ=MONTHLY;BYDAY=2WE,-1FR"
         ],
     }
 ).execute()
 
-items = event.get("items", None)
-if items is not None:
-    print(json.dumps(items[:4], indent=2))
-else:
-    print(json.dumps(event, indent=2))
+print(json.dumps(event, indent=2))

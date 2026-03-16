@@ -1,36 +1,58 @@
-from dataclasses import dataclass
-from datetime import timedelta
-from enum import StrEnum, Enum
+from __future__ import annotations
 
-from tortoise import Model, fields
+from datetime import timedelta, datetime
+from enum import StrEnum
 
+from sqlalchemy import String, Integer, DateTime, JSON, Interval, Time
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
-class FrequencyChoices(StrEnum):
+from src.db import Base
+
+class LabeledStrEnum(StrEnum):
+    label: str
+
+    def __new__(cls, value: str, label: str):
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        obj.label = label
+        return obj
+
+    @classmethod
+    def choices(cls):
+        return [(member.value, member.label) for member in cls]
+
+    @classmethod
+    def values(cls):
+        return [member.value for member in cls]
+
+    @classmethod
+    def labels(cls):
+        return [member.label for member in cls]
+        
+        
+class FrequencyChoices(LabeledStrEnum):
     DAILY = "daily", "day"
     WEEKLY = "weekly", "week"
     MONTHLY = "monthly", "month"
     YEARLY = "yearly", "year"
 
-    def __new__(cls, value, translation):
-        self = str.__new__(cls, value)
-        self._value_ = value
-        self.translation = translation
-        return self
 
+class Chore(Base):
+    __tablename__ = "chores"
 
-class Chore(Model):
-    id = fields.IntField(primary_key=True)
-    name = fields.CharField(max_length=255, unique=True)
-    created_at = fields.DatetimeField(auto_now_add=True)
-    updated_at = fields.DatetimeField(auto_now=True)
-    image = fields.CharField(
-        max_length=1024, null=True, default=None
-    )  # TODO: make a separate field type for this.
-    frequency = fields.CharEnumField(enum_type=FrequencyChoices, max_length=7)
-    frequency_interval = fields.IntField(default=1)
-    frequency_data = fields.JSONField()
-    duration = fields.TimeDeltaField(default=timedelta(minutes=30))
-    preferred_time = fields.CharField(max_length=21) # Because of sqlite3 limitation
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    image: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
+    duration: Mapped[timedelta] = mapped_column(Interval, default=timedelta(minutes=30))
+    start_from: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
 
-    def __str__(self):
-        return self.name
+    rrules: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), default=None)
+
+    events: Mapped[list[CalendarEvent]] = relationship("CalendarEvent", back_populates="chore")
+
+    def __str__(self) -> str:
+        return f"{self.name}({self.id})"
+

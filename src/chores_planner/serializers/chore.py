@@ -1,194 +1,120 @@
-from datetime import time
-from enum import Enum, StrEnum
+from dateutil import rrule
+from datetime import datetime, timedelta
 from functools import cached_property
-from typing import Annotated, Literal, Union
+from typing import Self
 
 import inflect
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
-    SkipValidation,
     TypeAdapter,
     computed_field,
-    create_model,
     model_validator,
     types,
 )
-from tortoise.contrib.pydantic import PydanticListModel, pydantic_model_creator
 
-from src.chores_planner.models.chore import Chore, FrequencyChoices
-
-BaseChoreCreateModel = pydantic_model_creator(
-    Chore, exclude_readonly=True, exclude=("image",)
-)
-BaseChoreGetModel = pydantic_model_creator(Chore)
 p = inflect.engine()
 
 
-def pydantic_queryset_creator(
-    submodel: type[BaseModel],
-    name: str,
-    exclude: tuple[str, ...] = (),
-    include: tuple[str, ...] = (),
-    computed: tuple[str, ...] = (),
-    allow_cycles: bool | None = None,
-    sort_alphabetically: bool | None = None,
-) -> type[PydanticListModel]:
-    model = create_model(
-        name,
-        __base__=PydanticListModel,
-        root=(list[submodel], Field(default_factory=list)),  # type: ignore
-    )
-    # model.__doc__ = _cleandoc(cls)
-    model.model_config["title"] = name or f"{submodel.model_config['title']}_list"
-    model.model_config["submodel"] = submodel  # type: ignore
-    return model
+# TODO: work on deduplication
+class ChoreCreateModel(BaseModel):
+    name: str = Field(max_length=255)
+    # TODO: image
+    duration: timedelta = timedelta(minutes=30)
+    start_from: datetime = datetime.now()
+
+    rrules: list[str] | None = None
+    _rruleset: rrule.rruleset | rrule.rrule | None = None
+
+    @model_validator(mode="after")
+    def check_rrules(self) -> Self:
+        if self.rrules is not None:
+            try:
+                self._rruleset = rrule.rrulestr('\n'.join(self.rrules))    
+            except Exception as e:
+                raise ValueError("Rrule is not valid.") from e
+        return self
 
 
-class ChoreGetModel(BaseChoreGetModel):
-    id: types.PositiveInt  # defined because it's wierd to see -12345 in openAPI docs!
-    frequency_interval: types.PositiveInt
-    frequency_data: FrequencyData
-    preferred_time: time
+def _translate_single_rrule(rule: rrule.rrule) -> str:
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    MONTHS = ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+    ORDINALS = {1: "first", 2: "second", 3: "third", 4: "fourth",
+                -1: "last", -2: "second to last", -3: "third to last", -4: "fourth to last"}
+
+    def ordinal_str(n: int) -> str:
+        return ORDINALS[n] if n in ORDINALS else p.ordinal(str(n))
+
+    freq = rule._freq
+    interval = rule._interval
+
+    match freq:
+        case rrule.DAILY:
+            base = "daily" if interval == 1 else f"every {interval} days"
+        case rrule.WEEKLY:
+            base = "every week" if interval == 1 else f"every {interval} weeks"
+        case rrule.MONTHLY:
+            base = "every month" if interval == 1 else f"every {interval} months"
+        case rrule.YEARLY:
+            base = "every year" if interval == 1 else f"every {interval} years"
+        case _:
+            return ""
+
+    qualifier = ""
+    original = rule._original_rule
+
+    match freq:
+        case rrule.WEEKLY:
+            if rule._byweekday:
+                day_strs = [DAY_NAMES[d] + "s" for d in rule._byweekday]
+                qualifier = f"on {p.join(day_strs)}"
+        case rrule.MONTHLY | rrule.YEARLY:
+            if rule._bynweekday:
+                parts = [f"{ordinal_str(n)} {DAY_NAMES[d]}" for d, n in rule._bynweekday]
+                qualifier = f"on the {p.join(parts)}"
+            elif rule._bysetpos and rule._byweekday:
+                parts = [
+                    f"{ordinal_str(pos)} {DAY_NAMES[d]}"
+                    for pos in rule._bysetpos
+                    for d in rule._byweekday
+                ]
+                qualifier = f"on the {p.join(parts)}"
+            elif original.get("bymonthday") is not None:
+                qualifier = f"on the {p.join([p.ordinal(str(d)) for d in rule._bymonthday])}"
+            elif rule._bynmonthday:
+                parts = ["last day" if d == -1 else f"{ordinal_str(d)} to last day" for d in rule._bynmonthday]
+                qualifier = f"on the {p.join(parts)}"
+
+            if freq == rrule.YEARLY and original.get("bymonth") is not None:
+                month_str = p.join([MONTHS[m - 1] for m in rule._bymonth])
+                qualifier = f"in {month_str}" + qualifier
+
+    return f"{base} {qualifier}"
+
+
+class ChoreGetModel(ChoreCreateModel):
+    id: types.PositiveInt
+    created_at: datetime
+    updated_at: datetime
 
     @computed_field
     @cached_property
-    def frequency_translation(self) -> str:
-        frequency = (
-            f"Every {self.frequency_interval} {self.frequency.translation}s"
-            if self.frequency_interval > 1
-            else f"Every {self.frequency.translation}"
-        )
+    def rrules_translation(self) -> str | None:
+        if self.rrules is None:
+            return None
 
-        match self.frequency:
-            case FrequencyChoices.DAILY:
-                return frequency
-            case FrequencyChoices.WEEKLY:
-                days_list = [
-                    d.day.translation for d in self.frequency_data.by_days or []
-                ]
-                return f"{frequency} on {p.join(days_list)}"
-            case FrequencyChoices.MONTHLY:
-                if self.frequency_data.by_monthdays:
-                    return (
-                        f"{frequency} on day {p.join(self.frequency_data.by_monthdays)}"
-                    )
-                bydays = []
-                for byday in self.frequency_data.by_days or []:
-                    if byday.occurance > 0:
-                        bydays.append(
-                            f"{p.number_to_words(p.ordinal(byday.occurance))} {byday.day.translation}"
-                        )
-                    elif byday.occurance == -1:
-                        bydays.append(f"last {byday.day.translation}")
-                return f"{frequency} on the {p.join(bydays)}"
-            case FrequencyChoices.YEARLY:
-                return f"{frequency} (nope, not going to translate this)."
-        return ""
+        translations = []
+        for rule_str in self.rrules:
+            try:
+                parsed = rrule.rrulestr(rule_str)
+                rules = parsed._rrule if isinstance(parsed, rrule.rruleset) else [parsed]
+                translations.extend(_translate_single_rrule(r) for r in rules)
+            except Exception:
+                translations.append(rule_str)
+
+        return "; ".join(translations) if translations else None
 
 
 ChoreListModel = TypeAdapter(list[ChoreGetModel])
-
-
-class WeekDay(StrEnum):
-    SU = "SU", "Sunday"
-    MO = "MO", "Monday"
-    TU = "TU", "Tuesday"
-    WE = "WE", "Wednesday"
-    TH = "TH", "Thursday"
-    FR = "FR", "Friday"
-    SA = "SA", "Saturday"
-
-    def __new__(cls, value, translation):
-        self = str.__new__(cls, value)
-        self._value_ = value
-        self.translation = translation
-        return self
-
-
-class ByDay(BaseModel):
-    occurance: Annotated[int, Field(lt=53, gt=-53)] | None = None
-    day: WeekDay
-
-
-class FrequencyData(BaseModel):
-    by_days: list[ByDay] | None = None
-    by_monthdays: list[Annotated[int, Field(lt=31, gt=-31)]] | None = None
-
-    @model_validator(mode="after")
-    def check_only_one_is_given(self):
-        if self.by_days and self.by_monthdays:
-            raise ValueError(
-                "Only one of the 'by_days' or 'by_monthdays' fields can be specified."
-            )
-        return self
-
-
-class ChoreCreateModel(BaseChoreCreateModel):
-    frequency_data: FrequencyData
-    preferred_time: time
-
-    @model_validator(mode="after")
-    def check_frequency_data_with_frequency(self):
-        match self.frequency:
-            case FrequencyChoices.WEEKLY:
-                if not self.frequency_data.by_days:
-                    raise ValueError(
-                        "'by_day' should be specified for WEEKLY frequency."
-                    )
-                elif any(f.occurance for f in self.frequency_data.by_days):
-                    raise ValueError("You can't have occurance for WEEKLY frequency.")
-            case FrequencyChoices.MONTHLY:
-                if self.frequency_data.by_days and any(
-                    d.occurance is None for d in self.frequency_data.by_days
-                ):
-                    raise ValueError(
-                        "Occurance should be specified for MONTHLY frequency."
-                    )
-                elif self.frequency_data.by_days and any(
-                    f.occurance > 5 or f.occurance < -1 or f.occurance == 0
-                    for f in self.frequency_data.by_days
-                ):
-                    if any(-5 < f.occurance < -1 for f in self.frequency_data.by_days):
-                        raise ValueError(
-                            f"TBH the occurance value between -4 to -2 should be acceptable, but do you even understand this?! :))"
-                        )
-                    raise ValueError(
-                        "Occurance should be in range of -4 to -1 and 1 to 4 for MONTHLY frequency."
-                    )
-                elif (
-                    not self.frequency_data.by_monthdays
-                    and not self.frequency_data.by_days
-                ):
-                    raise ValueError(
-                        "One of the 'by_monthdays' or 'by_days' field should be specified."
-                    )
-            case FrequencyChoices.YEARLY:
-                if self.frequency_data.by_monthdays:
-                    raise ValueError("Invalid frequency data for YEARLY frequency.")
-                if self.frequency_data.by_days and any(
-                    f.occurance == 0 for f in self.frequency_data.by_days
-                ):
-                    raise ValueError("Occurance can't be zero.")
-        return self
-
-    @computed_field
-    @cached_property
-    def calendar_rule(self) -> str:
-        extra_string = ""
-
-        match self.frequency:
-            case FrequencyChoices.WEEKLY:
-                days_list = [d.day.value for d in self.frequency_data.by_days or []]
-                extra_string = f";BYDAY={','.join(days_list)}"
-            case FrequencyChoices.MONTHLY | FrequencyChoices.YEARLY:
-                if self.frequency_data.by_monthdays:
-                    extra_string = (
-                        f";BYMONTHDAY={','.join(self.frequency_data.by_monthdays)}"
-                    )
-                else:
-                    bydays = []
-                    for byday in self.frequency_data.by_days or []:
-                        bydays.append(f"{byday.occurance}{byday.day}")
-                    extra_string = f";BYDAY={','.join(bydays)}"
-        return f"RRULE:FREQ={self.frequency.upper()}{extra_string}"
