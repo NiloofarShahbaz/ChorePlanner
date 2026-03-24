@@ -31,10 +31,16 @@ class ChoreCreateModel(BaseModel):
     def check_rrules(self) -> Self:
         if self.rrules is not None:
             try:
-                self._rruleset = rrule.rrulestr('\n'.join(self.rrules))    
+                self._rruleset = rrule.rrulestr(self.rrule_str)
             except Exception as e:
                 raise ValueError("Rrule is not valid.") from e
         return self
+
+    @property
+    def rrule_str(self) -> str | None:
+        if self.rrules is None:
+            return None
+        return '\n'.join(self.rrules)
 
 
 def _translate_single_rrule(rule: rrule.rrule) -> str:

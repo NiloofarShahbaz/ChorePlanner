@@ -49,9 +49,8 @@ class GoogleCalendarService:
         self, chore_data: ChoreCreateModel, db: AsyncSession
     ) -> Chore:
         with build("calendar", "v3", credentials=await self.credentials) as service:
-            rule = rrulestr('\n'.join(chore_data.rrules), dtstart=chore_data.start_from)
-            first_occurrence = rule.after(chore_data.start_from, inc=True)
-            start_time = datetime.combine(first_occurrence, chore_data.start_from.time())
+            rule = rrulestr(chore_data.rrule_str, dtstart=chore_data.start_from)
+            start_time = rule.after(chore_data.start_from, inc=True)
             end_time = start_time + chore_data.duration
 
             try:
