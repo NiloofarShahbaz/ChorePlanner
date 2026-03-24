@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta, datetime
 from enum import StrEnum
-
-from sqlalchemy import String, Integer, DateTime, JSON, Interval, Time
+from typing import Optional
+from sqlalchemy import String, Integer, DateTime, JSON, Interval, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
-
 from src.db import Base
 
 class LabeledStrEnum(StrEnum):
@@ -48,10 +47,14 @@ class Chore(Base):
     image: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     duration: Mapped[timedelta] = mapped_column(Interval, default=timedelta(minutes=30))
     start_from: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-
     rrules: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), default=None)
+    
+    collection_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("collections.id", ondelete="SET NULL"), nullable=True
+    )
 
-    events: Mapped[list[CalendarEvent]] = relationship("CalendarEvent", back_populates="chore")
+    events: Mapped[list["CalendarEvent"]] = relationship(back_populates="chore")
+    collection: Mapped[Optional["Collection"]] = relationship(back_populates="chores")
 
     def __str__(self) -> str:
         return f"{self.name}({self.id})"
