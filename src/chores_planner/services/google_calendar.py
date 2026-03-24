@@ -49,9 +49,9 @@ class GoogleCalendarService:
         self, chore_data: ChoreCreateModel, db: AsyncSession
     ) -> Chore:
         with build("calendar", "v3", credentials=await self.credentials) as service:
-            rule = rrulestr(chore_data.calendar_rule, dtstart=datetime.now())
-            first_occurrence = rule.after(datetime.now(), inc=True)
-            start_time = datetime.combine(first_occurrence, chore_data.preferred_time)
+            rule = rrulestr('\n'.join(chore_data.rrules), dtstart=chore_data.start_from)
+            first_occurrence = rule.after(chore_data.start_from, inc=True)
+            start_time = datetime.combine(first_occurrence, chore_data.start_from.time())
             end_time = start_time + chore_data.duration
 
             try:
@@ -70,7 +70,7 @@ class GoogleCalendarService:
                                 "dateTime": end_time.isoformat(),
                                 "timeZone": "Europe/Amsterdam",
                             },
-                            "recurrence": [chore_data.calendar_rule],
+                            "recurrence": chore_data.rrules,
                         },
                     )
                     .execute()
@@ -78,15 +78,14 @@ class GoogleCalendarService:
             except Exception:
                 raise
 
-            chore_dict = chore_data.model_dump(exclude={"calendar_rule"})
-            chore_dict["preferred_time"] = str(chore_dict["preferred_time"])
-            chore_obj = Chore(**chore_dict)
+            chore_obj = Chore(**chore_data.model_dump())
+
             db.add(chore_obj)
             await db.flush()
 
             calendar_event = CalendarEvent(
                 calendar_event_id=event["id"],
-                starts_from=event["start"]["dateTime"],
+                starts_from=datetime.fromisoformat(event["start"]["dateTime"]),
                 chore_id=chore_obj.id,
             )
             db.add(calendar_event)
