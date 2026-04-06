@@ -20,6 +20,7 @@ dependencies = [
     "sqlalchemy>=2.0.46",
     "typer>=0.21.1",
     "alembic>=1.18.4",
+    "textual>=8.2.3",
 ]
 
 [dependency-groups]
