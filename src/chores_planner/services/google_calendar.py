@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from functools import cached_property
+from zoneinfo import ZoneInfo
 from logging import getLogger
 
 from dateutil.rrule import rrulestr
@@ -84,12 +85,47 @@ class GoogleCalendarService:
             db.add(chore_obj)
             await db.flush()
 
-            calendar_event = CalendarEvent(
+            # Store the parent recurring event
+            tz = ZoneInfo("Europe/Amsterdam")
+            parent_start = datetime.fromisoformat(event["start"]["dateTime"]).astimezone(tz).replace(tzinfo=None)
+            parent_event = CalendarEvent(
                 calendar_event_id=event["id"],
-                starts_from=datetime.fromisoformat(event["start"]["dateTime"]),
+                starts_from=parent_start,
                 chore_id=chore_obj.id,
+                is_parent=True,
             )
-            db.add(calendar_event)
+            db.add(parent_event)
+
+            # Fetch all individual instances (paginated)
+            all_instances = []
+            page_token = None
+            while True:
+                instances_result = (
+                    service.events()
+                    .instances(
+                        calendarId=CALENDAR_ID,
+                        eventId=event["id"],
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+                all_instances.extend(instances_result.get("items", []))
+                page_token = instances_result.get("nextPageToken")
+                if not page_token:
+                    break
+
+            for instance in all_instances:
+                instance_start = instance["start"].get("dateTime", instance["start"].get("date"))
+                parsed = datetime.fromisoformat(instance_start)
+                # Convert to local time and store as naive datetime
+                local_dt = parsed.astimezone(tz).replace(tzinfo=None)
+                db.add(CalendarEvent(
+                    calendar_event_id=instance["id"],
+                    starts_from=local_dt,
+                    chore_id=chore_obj.id,
+                    is_parent=False,
+                ))
+
             await db.commit()
             await db.refresh(chore_obj)
 
@@ -127,3 +163,30 @@ class GoogleCalendarService:
         await db.commit()
         await db.refresh(cal_event)
         return cal_event
+
+    async def delete_chore(self, chore_id: int, db: AsyncSession) -> None:
+        result = await db.execute(
+            select(Chore)
+            .options(selectinload(Chore.events))
+            .where(Chore.id == chore_id)
+        )
+        chore = result.scalar_one_or_none()
+        if chore is None:
+            raise ValueError(f"Chore {chore_id} not found")
+
+        # Find the parent event to delete from Google Calendar
+        parent_events = [e for e in chore.events if e.is_parent]
+        if parent_events:
+            with build("calendar", "v3", credentials=await self.credentials) as service:
+                for parent in parent_events:
+                    service.events().delete(
+                        calendarId=CALENDAR_ID,
+                        eventId=parent.calendar_event_id,
+                    ).execute()
+
+        # Delete all calendar events from DB
+        for event in chore.events:
+            await db.delete(event)
+
+        await db.delete(chore)
+        await db.commit()
