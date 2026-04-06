@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.chores_planner.models.chore import Chore
 from src.chores_planner.serializers.chore import (

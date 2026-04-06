@@ -8,10 +8,12 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src import CREDENTIALS_PATH, TOKEN_PATH
-from src.chores_planner.models.calendar_event import CalendarEvent
+from src.chores_planner.models.calendar_event import CalendarEvent, StatusChoices
 from src.chores_planner.models.chore import Chore
 from src.chores_planner.serializers.chore import ChoreCreateModel
 
@@ -92,3 +94,36 @@ class GoogleCalendarService:
             await db.refresh(chore_obj)
 
             return chore_obj
+
+    async def update_event_status(
+        self, event_id: int, status: StatusChoices, db: AsyncSession
+    ) -> CalendarEvent:
+        result = await db.execute(
+            select(CalendarEvent)
+            .options(selectinload(CalendarEvent.chore))
+            .where(CalendarEvent.id == event_id)
+        )
+        cal_event = result.scalar_one_or_none()
+        if cal_event is None:
+            raise ValueError(f"CalendarEvent {event_id} not found")
+
+        if status == StatusChoices.DONE:
+            with build("calendar", "v3", credentials=await self.credentials) as service:
+                if cal_event.chore:
+                    summary = cal_event.chore.name
+                else:
+                    existing = service.events().get(
+                        calendarId=CALENDAR_ID,
+                        eventId=cal_event.calendar_event_id,
+                    ).execute()
+                    summary = existing.get("summary", "")
+                service.events().patch(
+                    calendarId=CALENDAR_ID,
+                    eventId=cal_event.calendar_event_id,
+                    body={"summary": f"✅ {summary}"},
+                ).execute()
+
+        cal_event.status = status
+        await db.commit()
+        await db.refresh(cal_event)
+        return cal_event
