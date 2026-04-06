@@ -12,6 +12,7 @@ class CalendarEventGetModel(BaseModel):
     calendar_event_id: str
     starts_from: datetime
     chore_id: int | None
+    assignee_id: int | None = None
     is_parent: bool
     status: StatusChoices
     status_data: dict | None = None

@@ -109,11 +109,18 @@ class GoogleCalendarService:
 
         if status == StatusChoices.DONE:
             with build("calendar", "v3", credentials=await self.credentials) as service:
-                chore_name = cal_event.chore.name if cal_event.chore else ""
+                if cal_event.chore:
+                    summary = cal_event.chore.name
+                else:
+                    existing = service.events().get(
+                        calendarId=CALENDAR_ID,
+                        eventId=cal_event.calendar_event_id,
+                    ).execute()
+                    summary = existing.get("summary", "")
                 service.events().patch(
                     calendarId=CALENDAR_ID,
                     eventId=cal_event.calendar_event_id,
-                    body={"summary": f"✅ {chore_name}"},
+                    body={"summary": f"✅ {summary}"},
                 ).execute()
 
         cal_event.status = status
